@@ -5,7 +5,12 @@
 #include <gui/modules/submenu.h>
 #include <gui/modules/variable_item_list.h>
 #include <dialogs/dialogs.h>
+#include <stdbool.h>
 #include "settings.h"
+
+#define GUI_MANAGER_COMMAND_QUEUE_PACKETS 64
+#define GUI_MANAGER_COMMAND_PACKET_BYTES  3
+#define GUI_MANAGER_BLE_CREDIT_BYTES      (GUI_MANAGER_COMMAND_QUEUE_PACKETS * 2)
 
 typedef struct {
   Gui* gui;
@@ -34,7 +39,9 @@ typedef struct {
   
   // Debug counters
   uint32_t packets_received;
+  uint32_t packets_dropped;
   uint8_t last_byte;
+  volatile bool ble_event_pending;
 } GuiManager;
 
 GuiManager* GuiManagerAlloc(void);

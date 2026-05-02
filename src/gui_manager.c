@@ -78,8 +78,15 @@ static bool CustomEventCallback(void* context, uint32_t event) {
   GuiManager* manager = context;
   if (event == GuiManagerEventStartRemote) { 
     FURI_LOG_I(TAG, "Starting Remote View...");
-    FlipperBleListenerStart(manager);
-    FlipperUsbHidInit();
+    if (FlipperBleListenerStart(manager) != 0) {
+      variable_item_set_current_value_text(manager->ble_status_item, "BLE start failed");
+      view_dispatcher_switch_to_view(manager->view_dispatcher, GuiManagerViewStatus);
+      return true;
+    }
+    variable_item_set_current_value_text(manager->ble_status_item, "Advertising");
+    if (FlipperUsbHidInit() != 0) {
+      variable_item_set_current_value_text(manager->ble_status_item, "USB HID failed");
+    }
     view_dispatcher_switch_to_view(manager->view_dispatcher, GuiManagerViewStatus);
     return true;
   } else if (event == GuiManagerEventOpenSettings) {
@@ -107,6 +114,7 @@ static bool CustomEventCallback(void* context, uint32_t event) {
   } else if (event == GuiManagerEventBleDataReceived) {
     uint8_t packet[3];
     char buf[32];
+    manager->ble_event_pending = false;
     while (furi_message_queue_get(manager->command_queue, packet, 0) == FuriStatusOk) {
         manager->packets_received++;
         manager->last_byte = packet[1];
@@ -127,9 +135,6 @@ static bool CustomEventCallback(void* context, uint32_t event) {
         // FURI_LOG_D(TAG, "Parsing packet type 0x%02X", packet[0]);
         FlipperProtocolParse(packet, packet_len);
     }
-    snprintf(buf, sizeof(buf), "Pkts: %lu", manager->packets_received);
-    variable_item_set_current_value_text(manager->ble_status_item, buf);
-    
     FuriString* header_str = furi_string_alloc();
     furi_string_set(header_str, "HID:");
     if (current_modifiers_mask & 0x01) furi_string_cat(header_str, " ^");
@@ -153,8 +158,14 @@ void GuiManagerHandleBleData(GuiManager* manager, const uint8_t* data, size_t si
   if (size < 2) return;
   uint8_t packet[3] = {0};
   memcpy(packet, data, size > 3 ? 3 : size);
-  furi_message_queue_put(manager->command_queue, packet, 0);
-  view_dispatcher_send_custom_event(manager->view_dispatcher, GuiManagerEventBleDataReceived);
+  if (furi_message_queue_put(manager->command_queue, packet, 0) != FuriStatusOk) {
+    manager->packets_dropped++;
+    return;
+  }
+  if (!manager->ble_event_pending) {
+    manager->ble_event_pending = true;
+    view_dispatcher_send_custom_event(manager->view_dispatcher, GuiManagerEventBleDataReceived);
+  }
 }
 
 GuiManager* GuiManagerAlloc(void) {
@@ -171,7 +182,8 @@ GuiManager* GuiManagerAlloc(void) {
   view_dispatcher_attach_to_gui(manager->view_dispatcher, manager->gui, ViewDispatcherTypeFullscreen);
   view_dispatcher_set_event_callback_context(manager->view_dispatcher, manager);
   view_dispatcher_set_custom_event_callback(manager->view_dispatcher, CustomEventCallback);
-  manager->command_queue = furi_message_queue_alloc(16, 3);
+  manager->command_queue = furi_message_queue_alloc(
+      GUI_MANAGER_COMMAND_QUEUE_PACKETS, GUI_MANAGER_COMMAND_PACKET_BYTES);
   
   manager->submenu = submenu_alloc();
   submenu_set_header(manager->submenu, "HID Bridge");
@@ -210,6 +222,8 @@ GuiManager* GuiManagerAlloc(void) {
 void GuiManagerFree(GuiManager* manager) {
   FURI_LOG_D(TAG, "Freeing GuiManager...");
   furi_assert(manager);
+  FlipperBleListenerStop();
+  FlipperUsbHidDeinit();
   view_dispatcher_remove_view(manager->view_dispatcher, GuiManagerViewMenu);
   view_dispatcher_remove_view(manager->view_dispatcher, GuiManagerViewStatus);
   view_dispatcher_remove_view(manager->view_dispatcher, GuiManagerViewSettings);
